@@ -64,7 +64,7 @@ async function loadBranch(octokit, branch) {
     return result.data.shift();
 }
 
-async function checkMessages(octokit, branchHeadSha, tagSha, issueTags) {
+async function checkMessages(octokit, branchHeadSha, tagSha, issueTags, commitTypes = {}) {
     const sha = branchHeadSha;
 
     // core.info(`load commits since ${sha}`);
@@ -81,22 +81,59 @@ async function checkMessages(octokit, branchHeadSha, tagSha, issueTags) {
         return releaseBump;
     }
 
+    // Keep the original rules
     const wip   = new RegExp("#wip\\b");
     const major = new RegExp("#major\\b");
     const minor = new RegExp("#minor\\b");
     const patch = new RegExp("#patch\\b");
 
-    const fix   = new RegExp("fix(?:es)? #\\d+");
+    // Default commit type rules
+    const defaultCommitTypes = {
+        "BREAKING CHANGE": "major",
+        "breaking": "major",
+        "feat": "minor",
+        "feature": "minor",
+        "fix": "patch",
+        "perf": "patch",
+        "build": "patch",
+        "chore": "patch",
+        "ci": "patch",
+        "docs": "patch",
+        "refactor": "patch",
+        "revert": "patch",
+        "style": "patch",
+        "test": "patch"
+    };
+
+    // Merge default rules with custom rules
+    const finalCommitTypes = { ...defaultCommitTypes, ...commitTypes };
+    
+    // Define regex patterns to match commit types
+    const commitTypeRegexes = {};
+    for (const type in finalCommitTypes) {
+        // For BREAKING CHANGE, it usually appears in the commit message body
+        if (type === "BREAKING CHANGE") {
+            commitTypeRegexes[type] = new RegExp(type + ":", "i");
+        } else if (type === "breaking") {
+            // Breaking can appear with or without colon
+            commitTypeRegexes[type] = new RegExp("^" + type + "(:|\\b)", "i");
+        } else {
+            // Other types usually appear in the commit message header with scope and colon
+            commitTypeRegexes[type] = new RegExp("^" + type + "(\\(.*\\))?:", "i");
+        }
+    }
+
+    // Keep the original fix issue rule
+    const fixIssue = new RegExp("fix(?:es)? #\\d+");
     const matcher = new RegExp(/fix(?:es)? #(\d+)\b/);
 
     for (const commit of result.data) {
-        // core.info(commit.message);
         const message = commit.commit.message;
 
         if (commit.sha === tagSha) {
             break;
         }
-        // core.info(`commit is : "${JSON.stringify(commit.commit, undefined, 2)}"`);
+
         // core.info(`message is : "${message}" on ${commit.commit.committer.date} (${commit.sha})`);
 
         if (wip.test(message)) {
@@ -104,25 +141,51 @@ async function checkMessages(octokit, branchHeadSha, tagSha, issueTags) {
             continue;
         }
 
+        // First check traditional # tag rules
         if (major.test(message)) {
-            // core.info("found major tag, stop");
+            core.info(`Found #major tag: ${message.split('\n')[0]}`);
             return "major";
         }
 
         if (minor.test(message)) {
-            // core.info("found minor tag");
-
+            core.info(`Found #minor tag: ${message.split('\n')[0]}`);
             releaseBump = "minor";
             continue;
         }
 
         if (releaseBump !== "minor" && patch.test(message)) {
-            // core.info("found patch tag");
+            core.info(`Found #patch tag: ${message.split('\n')[0]}`);
             releaseBump = "patch";
             continue;
         }
 
-        if (releaseBump !== "minor" && fix.test(message)) {
+        // Then check custom commit type rules
+        let matchedType = false;
+        for (const type in commitTypeRegexes) {
+            if (commitTypeRegexes[type].test(message)) {
+                const bumpLevel = finalCommitTypes[type];
+                core.info(`Found ${type} type commit: ${message.split('\n')[0]}`);
+                
+                // Priority: major > minor > patch > none
+                if (bumpLevel === "major") {
+                    return "major";  // Return major immediately
+                } else if (bumpLevel === "minor" && releaseBump !== "major") {
+                    releaseBump = "minor";
+                } else if (bumpLevel === "patch" && releaseBump !== "major" && releaseBump !== "minor") {
+                    releaseBump = "patch";
+                }
+                
+                matchedType = true;
+                break;  // A commit only matches one type
+            }
+        }
+        
+        if (matchedType) {
+            continue;
+        }
+
+        // Finally check fix issue rule
+        if (releaseBump !== "minor" && fixIssue.test(message)) {
             // core.info("found a fix message, check issue for enhancements");
 
             const id = matcher.exec(message);
@@ -130,7 +193,7 @@ async function checkMessages(octokit, branchHeadSha, tagSha, issueTags) {
             if (id && Number(id[1]) > 0) {
                 const issue_number = Number(id[1]);
 
-                core.info(`check issue ${issue_number} for minor labels`);
+                core.info(`Checking issue ${issue_number} labels`);
 
                 const { data } = await octokit.rest.issues.get({
                     owner,
@@ -142,19 +205,15 @@ async function checkMessages(octokit, branchHeadSha, tagSha, issueTags) {
                     releaseBump = "patch";
 
                     for (const label of data.labels) {
-
                         if (issueTags.indexOf(label.name) >= 0) {
-                            core.info("found enhancement issue");
+                            core.info("Found enhancement issue, upgrading to minor version");
                             releaseBump = "minor";
                             break;
                         }
                     }
                 }
             }
-
-            // continue;
         }
-        // core.info("no info message");
     }
 
     return releaseBump;
@@ -189,6 +248,7 @@ async function action() {
     const withV         = core.getInput("with-v").toLowerCase() === "false" ? "" : "v";
     const customTag     = core.getInput("tag");
     const issueLabels   = core.getInput("issue-labels");
+    const commitTypeConfig = core.getInput("commit-types");
 
     let branchInfo, nextVersion;
 
@@ -227,6 +287,12 @@ async function action() {
         }
 
         core.setOutput("new-tag", customTag);
+        if(customTag.startsWith("v")){
+            core.setOutput("new-version", customTag.slice(1));
+        }
+        else{
+            core.setOutput("new-version", customTag);
+        }
     }
     else {
         core.info(`maching refs: ${ sha }`);
@@ -240,12 +306,24 @@ async function action() {
         const versionTag = latestTag && latestTag.name ? latestTag.name : "0.0.0";
 
         core.setOutput("tag", versionTag);
+        if(versionTag.startsWith("v")){
+            core.setOutput("version", versionTag.slice(1));
+        }
+        else{
+            core.setOutput("version", versionTag);
+        }
 
         if (latestTag && latestTag.commit.sha === sha) {
             core.info("no new commits, avoid tagging");
 
             // in this case the new and the old tag are the same.
             core.setOutput("new-tag", versionTag);
+            if(versionTag.startsWith("v")){
+                core.setOutput("new-version", versionTag.slice(1));
+            }
+            else{
+                core.setOutput("new-version", versionTag);
+            }
             return;
         }
 
@@ -271,6 +349,17 @@ async function action() {
             }
         }
 
+        // 检查配置是否有效
+        let commitTypeRules = {};
+        if (commitTypeConfig) {
+            try {
+                commitTypeRules = JSON.parse(commitTypeConfig);
+                core.info(`Loaded custom commit type rules: ${JSON.stringify(commitTypeRules)}`);
+            } catch (error) {
+                core.warning(`Failed to parse commit type config, using default rules: ${error.message}`);
+            }
+        }
+
         // check if commits and issues point to a diffent release level
         // This filters hash tags for major, minor, patch and wip commit messages.
         core.info("commits in branch");
@@ -279,7 +368,8 @@ async function action() {
             octokit,
             branchInfo.object.sha,
             latestMainTag ? latestMainTag.commit.sha : "", // terminate at the previous tag
-            issLabs
+            issLabs,
+            commitTypeRules
         );
         // core.info(`commit messages suggest ${msgLevel} upgrade`);
 
@@ -297,7 +387,7 @@ async function action() {
 
         core.info( `bump tag ${ nextVersion }` );
 
-        core.setOutput("new-tag", nextVersion);
+        core.setOutput("new-version", nextVersion);
     }
 
     if (dryRun === "true") {
@@ -306,6 +396,7 @@ async function action() {
     }
 
     const newTag = `${ withV }${ nextVersion }`;
+    core.setOutput("new-tag", newTag);
 
     core.info(`really add tag ${ customTag ? customTag : newTag }`);
 

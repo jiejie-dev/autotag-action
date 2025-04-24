@@ -4,6 +4,12 @@ A lightning fast autotagger for `semver`-tagging. It helps you to stay on top of
 
 This action scans your commit messages for fixed issues and semver changes. Use `#major`, `#minor`, or `#patch` tags in your commit messages and autotagger will increase your version tags accordingly. If a commit message fixes an issue (using `fixes #issuenbr` style messages), then `autotag-action` will check wether the corresponding issue was labled as `enhancement` that triggers a `minor` release, or a bug fix that will be treated as a `patch`. `autotag-action` also supports prereleases for non-release branches and custom tags.
 
+Additionally, this action now supports conventional commit types to automatically determine the version increment:
+
+- If the commit message contains `BREAKING CHANGE:` or starts with `breaking:`, the major version will be incremented.
+- If the commit message starts with `feat:` or `feature:`, the minor version will be incremented.
+- If the commit message starts with `build:`, `chore:`, `ci:`, `docs:`, `fix:`, `perf:`, `refactor:`, `revert:`, `style:` or `test:`, the patch version will be incremented.
+
 This action has been inspired by [anothrNick/github-tag-action](https://github.com/anothrNick/github-tag-action), but is written completely in javascript and runs directly within the runner.
 
 `autotag-action` uses [`Octokit`](https://octokit.github.io/rest.js) for tagging and does not depend on checking out the repository. 
@@ -45,6 +51,33 @@ This input is useful if subsequent steps manipulate a different branch, which sh
 ### `issue-labels`
 
 **Optional** A comma-separated list of issue labels that changes the bump level from `patch` to `minor` (Default: `enhancement`).
+
+### `commit-types`
+
+**Optional** JSON string defining custom commit type rules for version bumping. Available bump levels are `major`, `minor`, and `patch`. Default rules are: 
+```json
+{
+  "BREAKING CHANGE": "major",
+  "breaking": "major",
+  "feat": "minor",
+  "feature": "minor",
+  "fix": "patch",
+  "perf": "patch",
+  "build": "patch",
+  "chore": "patch",
+  "ci": "patch",
+  "docs": "patch",
+  "refactor": "patch",
+  "revert": "patch",
+  "style": "patch",
+  "test": "patch"
+}
+```
+
+Example: 
+```yaml
+commit-types: '{"feat":"minor","fix":"patch","docs":"patch","style":"patch","refactor":"patch","perf":"patch","test":"patch","build":"patch"}'
+```
 
 ## Outputs
 
@@ -231,3 +264,31 @@ jobs:
 The `tag` input allows to use a custom tag for tagging. This is useful when generating or applying tags. 
 
 The `issue-labels` input allows to define issues labels that should be considered as minor versions (API extensions). The default is the `enhancement` label. All other labels are treated as patches that do not change the API.
+
+### Using conventional commits
+
+If your team follows conventional commit standards, you can use the `commit-types` input to customize version bumping based on commit types:
+
+```yaml
+name: Auto.Tag with Conventional Commits
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  autotag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: phish108/autotag-action@v1.1.55
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          with-v: "true"
+          commit-types: '{"feat":"minor","fix":"patch","perf":"patch","BREAKING CHANGE":"major","refactor":"patch"}'
+```
+
+This configuration will:
+- Bump major version for commits with "BREAKING CHANGE:" in the message or starting with "breaking:"
+- Bump minor version for commits starting with "feat:" or "feature:"
+- Bump patch version for commits starting with "fix:", "perf:", "build:", "chore:", "ci:", "docs:", "refactor:", "revert:", "style:", or "test:"

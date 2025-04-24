@@ -33,11 +33,19 @@ inputs:
     description: "provide a comma separated list of labels that trigger a minor version bump"
     required: false
     default: "enhancement"
+  commit-types:
+    description: "Configure custom commit type rules in JSON format. Example: '{\"feat\":\"minor\",\"fix\":\"patch\",\"perf\":\"patch\",\"BREAKING CHANGE\":\"major\"}'"
+    required: false
+    default: ""
 outputs:
   new-tag: # id of output
     description: 'new tag'
+  new-version: # id of output
+    description: 'new version'
   tag: # id of output
     description: 'latest tag'
+  version: # id of output
+    description: 'latest version'
 runs:
   using: 'node16'
   main: 'dist/index.js'
